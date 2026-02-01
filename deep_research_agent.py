@@ -102,6 +102,13 @@ class ResearchResult:
     # エラーメッセージ（該当する場合）
     error_message: str = ""
 
+    # トークン使用量（APIから取得可能な場合）
+    token_usage: dict = field(default_factory=lambda: {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+    })
+
 
 # ============================================================
 # バッチ調査タスクを管理するデータクラス
@@ -192,6 +199,55 @@ class DeepResearchAgent:
             return f"{instruction}\n\n{query}"
 
         return query
+
+    def _extract_token_usage(self, interaction) -> dict:
+        """
+        APIレスポンスからトークン使用量を抽出する
+
+        Args:
+            interaction: APIから返されたinteractionオブジェクト
+
+        Returns:
+            dict: トークン使用量の辞書
+        """
+        token_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+        }
+
+        try:
+            # usage_metadata から取得を試みる（一般的なGemini APIの形式）
+            if hasattr(interaction, 'usage_metadata'):
+                metadata = interaction.usage_metadata
+                if hasattr(metadata, 'prompt_token_count'):
+                    token_usage["input_tokens"] = metadata.prompt_token_count or 0
+                if hasattr(metadata, 'candidates_token_count'):
+                    token_usage["output_tokens"] = metadata.candidates_token_count or 0
+                if hasattr(metadata, 'total_token_count'):
+                    token_usage["total_tokens"] = metadata.total_token_count or 0
+
+            # usage から取得を試みる（別の形式）
+            elif hasattr(interaction, 'usage'):
+                usage = interaction.usage
+                if hasattr(usage, 'input_tokens'):
+                    token_usage["input_tokens"] = usage.input_tokens or 0
+                if hasattr(usage, 'output_tokens'):
+                    token_usage["output_tokens"] = usage.output_tokens or 0
+                token_usage["total_tokens"] = token_usage["input_tokens"] + token_usage["output_tokens"]
+
+            # token_count から取得を試みる
+            elif hasattr(interaction, 'token_count'):
+                token_usage["total_tokens"] = interaction.token_count or 0
+
+            # 合計が0の場合は入力+出力で計算
+            if token_usage["total_tokens"] == 0 and (token_usage["input_tokens"] > 0 or token_usage["output_tokens"] > 0):
+                token_usage["total_tokens"] = token_usage["input_tokens"] + token_usage["output_tokens"]
+
+        except Exception as e:
+            print(f"      ⚠️ トークン情報の取得に失敗: {e}")
+
+        return token_usage
 
     def _generate_filename(self, query: str) -> str:
         """
@@ -354,20 +410,25 @@ class DeepResearchAgent:
                         if not full_report:
                             full_report = "調査は完了しましたが、レポート本文を取得できませんでした。"
 
+                        # トークン使用量を取得
+                        token_usage = self._extract_token_usage(current_interaction)
+
                         task.result = ResearchResult(
                             query=task.query,
                             status="completed",
                             full_report=full_report,
                             started_at=task.started_at,
                             completed_at=datetime.now().isoformat(),
-                            duration_seconds=task_elapsed
+                            duration_seconds=task_elapsed,
+                            token_usage=token_usage
                         )
 
                         # 構造化データを抽出
                         task.result = self._extract_structured_data(task.result)
 
                         # 即座にファイルを保存
-                        print(f"      ✅ 完了: {task.query[:30]}...")
+                        token_info = f" (トークン: {token_usage['total_tokens']:,})" if token_usage['total_tokens'] > 0 else ""
+                        print(f"      ✅ 完了: {task.query[:30]}...{token_info}")
                         self.save_markdown(task.result, task.filename)
                         self.save_json(task.result, task.filename)
 
@@ -401,6 +462,11 @@ class DeepResearchAgent:
         completed_tasks = [t for t in tasks if t.status == "completed"]
         failed_tasks = [t for t in tasks if t.status in ["failed", "timeout"]]
 
+        # トークン使用量を集計
+        total_input_tokens = sum(t.result.token_usage.get("input_tokens", 0) for t in completed_tasks if t.result)
+        total_output_tokens = sum(t.result.token_usage.get("output_tokens", 0) for t in completed_tasks if t.result)
+        total_tokens = sum(t.result.token_usage.get("total_tokens", 0) for t in completed_tasks if t.result)
+
         print("\n" + "=" * 60)
         print("🎉 バッチ調査完了！")
         print("=" * 60)
@@ -410,10 +476,20 @@ class DeepResearchAgent:
         print(f"   - 失敗/タイムアウト: {len(failed_tasks)}件")
         print(f"   - 総所要時間: {total_time:.1f}秒")
 
+        # トークン使用量を表示
+        if total_tokens > 0:
+            print(f"\n🔢 トークン使用量（合計）:")
+            print(f"   - 入力トークン: {total_input_tokens:,}")
+            print(f"   - 出力トークン: {total_output_tokens:,}")
+            print(f"   - 合計トークン: {total_tokens:,}")
+
         if completed_tasks:
             print(f"\n📁 保存されたファイル:")
             for task in completed_tasks:
-                print(f"   - {self.config.output_dir}/{task.filename}.md")
+                token_info = ""
+                if task.result and task.result.token_usage.get("total_tokens", 0) > 0:
+                    token_info = f" ({task.result.token_usage['total_tokens']:,} tokens)"
+                print(f"   - {self.config.output_dir}/{task.filename}.md{token_info}")
                 print(f"   - {self.config.output_dir}/{task.filename}.json")
 
         if failed_tasks:
@@ -541,7 +617,10 @@ class DeepResearchAgent:
                     # 万が一中身が空だった場合の処理
                     if not result.full_report:
                         result.full_report = "調査は完了しましたが、レポート本文を取得できませんでした。"
-                    
+
+                    # トークン使用量を取得
+                    result.token_usage = self._extract_token_usage(current_interaction)
+
                     break # ループを抜ける
 
                 elif status.upper() == "FAILED":
@@ -828,6 +907,13 @@ def main():
 
             # ソースURL数を表示
             print(f"\n🔗 抽出されたソースURL: {len(result.source_urls)}件")
+
+            # トークン使用量を表示
+            if result.token_usage.get("total_tokens", 0) > 0:
+                print(f"\n🔢 トークン使用量:")
+                print(f"   - 入力トークン: {result.token_usage['input_tokens']:,}")
+                print(f"   - 出力トークン: {result.token_usage['output_tokens']:,}")
+                print(f"   - 合計トークン: {result.token_usage['total_tokens']:,}")
 
     except ValueError as e:
         print(f"\n❌ 設定エラー: {e}")
