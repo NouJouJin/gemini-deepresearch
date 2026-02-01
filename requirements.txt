@@ -7,3 +7,4 @@
 # Interactions APIはこのバージョン以降でサポートされています
 
 google-genai>=1.55.0
+python-dotenv>=1.0.0
