@@ -11,6 +11,9 @@ Gemini Deep Research Agent - 自動調査スクリプト
 
 必要な環境変数:
     GOOGLE_API_KEY: Google AI StudioのAPIキー
+
+使用例
+python deep_research_agent.py "たった一日で儲かる社長に生まれ変わるの書籍について書評やレビューや口コミやブログから内容を調査洗い出して"
 """
 
 import os
@@ -224,44 +227,34 @@ class DeepResearchAgent:
                 # - FAILED: 調査失敗
                 # - PROCESSING/PENDING: 処理中（続行）
                 # ============================================================
-                if status == "COMPLETED":
+                if status.upper() == "COMPLETED":
                     print("\n✅ 調査が完了しました！")
                     result.status = "completed"
 
-                    # 調査結果を取得
-                    # レスポンスの構造からテキストを抽出
-                    if hasattr(current_interaction, 'output') and current_interaction.output:
-                        # outputが直接文字列の場合
-                        if isinstance(current_interaction.output, str):
-                            result.full_report = current_interaction.output
-                        # outputがオブジェクトの場合
-                        elif hasattr(current_interaction.output, 'text'):
+                    # --- 修正箇所：結果の抽出ロジックを最新仕様に合わせる ---
+                    # 1. まず outputs (複数形) リストを確認
+                    if hasattr(current_interaction, 'outputs') and current_interaction.outputs:
+                        # 最後の出力に最終レポートが入っているのが一般的です
+                        result.full_report = current_interaction.outputs[-1].text
+                    
+                    # 2. outputs がなかった場合の予備（古い仕様や例外への対応）
+                    elif hasattr(current_interaction, 'result'):
+                        result.full_report = str(current_interaction.result)
+                    
+                    # 3. それでも取れなかった場合の最後の手段（元々のロジック）
+                    elif hasattr(current_interaction, 'output') and current_interaction.output:
+                        if hasattr(current_interaction.output, 'text'):
                             result.full_report = current_interaction.output.text
-                        # outputがリストの場合（複数のパーツ）
-                        elif isinstance(current_interaction.output, list):
-                            texts = []
-                            for part in current_interaction.output:
-                                if hasattr(part, 'text'):
-                                    texts.append(part.text)
-                                elif isinstance(part, str):
-                                    texts.append(part)
-                            result.full_report = "\n".join(texts)
+                        else:
+                            result.full_report = str(current_interaction.output)
 
-                    # responseフィールドがある場合の処理
-                    if not result.full_report and hasattr(current_interaction, 'response'):
-                        response = current_interaction.response
-                        if hasattr(response, 'text'):
-                            result.full_report = response.text
-                        elif hasattr(response, 'candidates'):
-                            for candidate in response.candidates:
-                                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                                    for part in candidate.content.parts:
-                                        if hasattr(part, 'text'):
-                                            result.full_report += part.text
+                    # 万が一中身が空だった場合の処理
+                    if not result.full_report:
+                        result.full_report = "調査は完了しましたが、レポート本文を取得できませんでした。"
+                    
+                    break # ループを抜ける
 
-                    break
-
-                elif status == "FAILED":
+                elif status.upper() == "FAILED":
                     result.status = "failed"
                     error_msg = "調査が失敗しました"
                     if hasattr(current_interaction, 'error'):
