@@ -61,6 +61,9 @@ class ResearchConfig:
     # 出力ファイル名（拡張子なし）
     output_filename: str = "report"
 
+    # 出力言語設定（"ja"=日本語, "en"=英語, None=指定なし）
+    output_language: Optional[str] = "ja"
+
 
 # ============================================================
 # 調査結果を格納するデータクラス
@@ -141,6 +144,29 @@ class DeepResearchAgent:
         # 出力ディレクトリの作成
         os.makedirs(self.config.output_dir, exist_ok=True)
 
+    def _build_query_with_language(self, query: str) -> str:
+        """
+        言語設定に基づいてクエリに言語指示を追加する
+
+        Args:
+            query: 元の調査テーマ
+
+        Returns:
+            str: 言語指示が追加されたクエリ
+        """
+        language_instructions = {
+            "ja": "【重要】レポートは必ず日本語で作成してください。",
+            "en": "[IMPORTANT] Please write the report in English.",
+            "zh": "[重要] 请用中文撰写报告。",
+            "ko": "[중요] 보고서를 한국어로 작성해 주세요.",
+        }
+
+        if self.config.output_language and self.config.output_language in language_instructions:
+            instruction = language_instructions[self.config.output_language]
+            return f"{instruction}\n\n{query}"
+
+        return query
+
     def research(self, query: str) -> ResearchResult:
         """
         調査を実行するメインメソッド
@@ -172,6 +198,9 @@ class DeepResearchAgent:
         print(f"⚙️  使用モデル: {self.config.model_name}")
         print(f"⏱️  最大調査時間: {self.config.max_timeout // 60}分")
         print(f"🔄 ポーリング間隔: {self.config.polling_interval}秒")
+        language_names = {"ja": "日本語", "en": "英語", "zh": "中国語", "ko": "韓国語"}
+        lang_display = language_names.get(self.config.output_language, "指定なし")
+        print(f"🌐 出力言語: {lang_display}")
         print("-" * 60)
 
         start_time = time.time()
@@ -184,8 +213,11 @@ class DeepResearchAgent:
             # ============================================================
             print("\n🚀 調査を開始しています...")
 
+            # 言語設定に基づいてクエリに言語指示を追加
+            effective_query = self._build_query_with_language(query)
+
             initial_interaction = self.client.interactions.create(
-                input=query,
+                input=effective_query,
                 agent=self.config.model_name,
                 background=True  # 非同期実行を有効化
             )
@@ -466,11 +498,13 @@ def main():
 
     try:
         # 設定を作成（必要に応じてカスタマイズ可能）
+        # output_language: "ja"=日本語, "en"=英語, "zh"=中国語, "ko"=韓国語, None=指定なし
         config = ResearchConfig(
             polling_interval=15,      # 15秒ごとにポーリング
             max_timeout=900,          # 最大15分
             output_dir="output",      # 出力ディレクトリ
-            output_filename="report"  # 出力ファイル名
+            output_filename="report", # 出力ファイル名
+            output_language="ja"      # 出力言語（日本語）
         )
 
         # エージェントを初期化
