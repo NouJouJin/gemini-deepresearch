@@ -1,0 +1,9 @@
+# Gemini Deep Research Agent - 必要なPythonパッケージ
+#
+# インストール方法:
+#   pip install -r requirements.txt
+#
+# 注意: google-genaiは1.55.0以降のバージョンが必要です
+# Interactions APIはこのバージョン以降でサポートされています
+
+google-genai>=1.55.0
