@@ -24,6 +24,19 @@ import re
 from datetime import datetime
 from typing import Optional, List
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
+
+# ============================================================
+# python-dotenvのインポート（.envファイルからAPIキーを読み込む）
+# ============================================================
+try:
+    from dotenv import load_dotenv
+    # スクリプトと同じディレクトリの.envファイルを読み込む
+    env_path = Path(__file__).parent / ".env"
+    load_dotenv(env_path)
+except ImportError:
+    # python-dotenvがない場合は環境変数のみを使用
+    pass
 
 # ============================================================
 # google-genaiライブラリのインポート
@@ -166,7 +179,11 @@ class DeepResearchAgent:
         if not self.api_key:
             raise ValueError(
                 "環境変数 GOOGLE_API_KEY が設定されていません。\n"
-                "Google AI Studioからキーを取得し、以下のように設定してください:\n"
+                "Google AI Studioからキーを取得し、以下のいずれかの方法で設定してください:\n\n"
+                "方法1: .envファイルを作成（推奨）\n"
+                "  スクリプトと同じディレクトリに .env ファイルを作成し、以下を記載:\n"
+                "  GOOGLE_API_KEY=your-api-key\n\n"
+                "方法2: 環境変数を設定\n"
                 "  export GOOGLE_API_KEY='your-api-key'"
             )
 
@@ -200,12 +217,43 @@ class DeepResearchAgent:
 
         return query
 
-    def _extract_token_usage(self, interaction) -> dict:
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        テキストからトークン数を推定する
+
+        日本語・中国語・韓国語: 約1.5文字で1トークン
+        英語・その他: 約4文字で1トークン（単語ベース）
+
+        Args:
+            text: トークン数を推定するテキスト
+
+        Returns:
+            int: 推定トークン数
+        """
+        if not text:
+            return 0
+
+        # 日本語・中国語・韓国語の文字をカウント
+        cjk_chars = len(re.findall(r'[\u3000-\u9fff\uac00-\ud7af]', text))
+        # その他の文字（英語など）
+        other_chars = len(text) - cjk_chars
+
+        # 推定トークン数を計算
+        # CJK文字: 約1.5文字で1トークン
+        # その他: 約4文字で1トークン
+        estimated = int(cjk_chars / 1.5) + int(other_chars / 4)
+
+        return max(estimated, 1)  # 最低1トークン
+
+    def _extract_token_usage(self, interaction, query: str = "", report: str = "") -> dict:
         """
         APIレスポンスからトークン使用量を抽出する
+        APIから取得できない場合は文字数から推定する
 
         Args:
             interaction: APIから返されたinteractionオブジェクト
+            query: 入力クエリ（推定用）
+            report: 出力レポート（推定用）
 
         Returns:
             dict: トークン使用量の辞書
@@ -213,12 +261,13 @@ class DeepResearchAgent:
         token_usage = {
             "input_tokens": 0,
             "output_tokens": 0,
-            "total_tokens": 0
+            "total_tokens": 0,
+            "is_estimated": False  # 推定値かどうか
         }
 
         try:
             # usage_metadata から取得を試みる（一般的なGemini APIの形式）
-            if hasattr(interaction, 'usage_metadata'):
+            if hasattr(interaction, 'usage_metadata') and interaction.usage_metadata:
                 metadata = interaction.usage_metadata
                 if hasattr(metadata, 'prompt_token_count'):
                     token_usage["input_tokens"] = metadata.prompt_token_count or 0
@@ -228,7 +277,7 @@ class DeepResearchAgent:
                     token_usage["total_tokens"] = metadata.total_token_count or 0
 
             # usage から取得を試みる（別の形式）
-            elif hasattr(interaction, 'usage'):
+            elif hasattr(interaction, 'usage') and interaction.usage:
                 usage = interaction.usage
                 if hasattr(usage, 'input_tokens'):
                     token_usage["input_tokens"] = usage.input_tokens or 0
@@ -237,7 +286,7 @@ class DeepResearchAgent:
                 token_usage["total_tokens"] = token_usage["input_tokens"] + token_usage["output_tokens"]
 
             # token_count から取得を試みる
-            elif hasattr(interaction, 'token_count'):
+            elif hasattr(interaction, 'token_count') and interaction.token_count:
                 token_usage["total_tokens"] = interaction.token_count or 0
 
             # 合計が0の場合は入力+出力で計算
@@ -245,7 +294,14 @@ class DeepResearchAgent:
                 token_usage["total_tokens"] = token_usage["input_tokens"] + token_usage["output_tokens"]
 
         except Exception as e:
-            print(f"      ⚠️ トークン情報の取得に失敗: {e}")
+            pass  # エラーは無視して推定に進む
+
+        # APIからトークン情報が取得できなかった場合は推定する
+        if token_usage["total_tokens"] == 0 and (query or report):
+            token_usage["input_tokens"] = self._estimate_tokens(query)
+            token_usage["output_tokens"] = self._estimate_tokens(report)
+            token_usage["total_tokens"] = token_usage["input_tokens"] + token_usage["output_tokens"]
+            token_usage["is_estimated"] = True
 
         return token_usage
 
@@ -410,8 +466,12 @@ class DeepResearchAgent:
                         if not full_report:
                             full_report = "調査は完了しましたが、レポート本文を取得できませんでした。"
 
-                        # トークン使用量を取得
-                        token_usage = self._extract_token_usage(current_interaction)
+                        # トークン使用量を取得（APIから取得できない場合は推定）
+                        token_usage = self._extract_token_usage(
+                            current_interaction,
+                            query=task.query,
+                            report=full_report
+                        )
 
                         task.result = ResearchResult(
                             query=task.query,
@@ -427,7 +487,11 @@ class DeepResearchAgent:
                         task.result = self._extract_structured_data(task.result)
 
                         # 即座にファイルを保存
-                        token_info = f" (トークン: {token_usage['total_tokens']:,})" if token_usage['total_tokens'] > 0 else ""
+                        if token_usage['total_tokens'] > 0:
+                            estimated_mark = "≈" if token_usage.get('is_estimated') else ""
+                            token_info = f" ({estimated_mark}{token_usage['total_tokens']:,} tokens)"
+                        else:
+                            token_info = ""
                         print(f"      ✅ 完了: {task.query[:30]}...{token_info}")
                         self.save_markdown(task.result, task.filename)
                         self.save_json(task.result, task.filename)
@@ -466,6 +530,7 @@ class DeepResearchAgent:
         total_input_tokens = sum(t.result.token_usage.get("input_tokens", 0) for t in completed_tasks if t.result)
         total_output_tokens = sum(t.result.token_usage.get("output_tokens", 0) for t in completed_tasks if t.result)
         total_tokens = sum(t.result.token_usage.get("total_tokens", 0) for t in completed_tasks if t.result)
+        any_estimated = any(t.result.token_usage.get("is_estimated", False) for t in completed_tasks if t.result)
 
         print("\n" + "=" * 60)
         print("🎉 バッチ調査完了！")
@@ -478,17 +543,20 @@ class DeepResearchAgent:
 
         # トークン使用量を表示
         if total_tokens > 0:
-            print(f"\n🔢 トークン使用量（合計）:")
-            print(f"   - 入力トークン: {total_input_tokens:,}")
-            print(f"   - 出力トークン: {total_output_tokens:,}")
-            print(f"   - 合計トークン: {total_tokens:,}")
+            estimated_note = "（≈は推定値）" if any_estimated else ""
+            print(f"\n🔢 トークン使用量（合計）{estimated_note}:")
+            estimated_mark = "≈" if any_estimated else ""
+            print(f"   - 入力トークン: {estimated_mark}{total_input_tokens:,}")
+            print(f"   - 出力トークン: {estimated_mark}{total_output_tokens:,}")
+            print(f"   - 合計トークン: {estimated_mark}{total_tokens:,}")
 
         if completed_tasks:
             print(f"\n📁 保存されたファイル:")
             for task in completed_tasks:
                 token_info = ""
                 if task.result and task.result.token_usage.get("total_tokens", 0) > 0:
-                    token_info = f" ({task.result.token_usage['total_tokens']:,} tokens)"
+                    estimated_mark = "≈" if task.result.token_usage.get("is_estimated") else ""
+                    token_info = f" ({estimated_mark}{task.result.token_usage['total_tokens']:,} tokens)"
                 print(f"   - {self.config.output_dir}/{task.filename}.md{token_info}")
                 print(f"   - {self.config.output_dir}/{task.filename}.json")
 
@@ -618,8 +686,12 @@ class DeepResearchAgent:
                     if not result.full_report:
                         result.full_report = "調査は完了しましたが、レポート本文を取得できませんでした。"
 
-                    # トークン使用量を取得
-                    result.token_usage = self._extract_token_usage(current_interaction)
+                    # トークン使用量を取得（APIから取得できない場合は推定）
+                    result.token_usage = self._extract_token_usage(
+                        current_interaction,
+                        query=query,
+                        report=result.full_report
+                    )
 
                     break # ループを抜ける
 
@@ -910,10 +982,13 @@ def main():
 
             # トークン使用量を表示
             if result.token_usage.get("total_tokens", 0) > 0:
-                print(f"\n🔢 トークン使用量:")
-                print(f"   - 入力トークン: {result.token_usage['input_tokens']:,}")
-                print(f"   - 出力トークン: {result.token_usage['output_tokens']:,}")
-                print(f"   - 合計トークン: {result.token_usage['total_tokens']:,}")
+                is_estimated = result.token_usage.get("is_estimated", False)
+                estimated_note = "（≈は推定値）" if is_estimated else ""
+                estimated_mark = "≈" if is_estimated else ""
+                print(f"\n🔢 トークン使用量{estimated_note}:")
+                print(f"   - 入力トークン: {estimated_mark}{result.token_usage['input_tokens']:,}")
+                print(f"   - 出力トークン: {estimated_mark}{result.token_usage['output_tokens']:,}")
+                print(f"   - 合計トークン: {estimated_mark}{result.token_usage['total_tokens']:,}")
 
     except ValueError as e:
         print(f"\n❌ 設定エラー: {e}")
