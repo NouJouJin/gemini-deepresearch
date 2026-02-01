@@ -22,7 +22,7 @@ import json
 import time
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from dataclasses import dataclass, field, asdict
 
 # ============================================================
@@ -104,6 +104,32 @@ class ResearchResult:
 
 
 # ============================================================
+# バッチ調査タスクを管理するデータクラス
+# ============================================================
+@dataclass
+class BatchResearchTask:
+    """バッチ調査の各タスクを管理するデータクラス"""
+
+    # 調査テーマ
+    query: str
+
+    # Interaction ID（API側で生成）
+    interaction_id: str = ""
+
+    # ステータス（pending, processing, completed, failed, timeout）
+    status: str = "pending"
+
+    # 開始時刻
+    started_at: str = ""
+
+    # 調査結果
+    result: Optional[ResearchResult] = None
+
+    # 生成されたファイル名（拡張子なし）
+    filename: str = ""
+
+
+# ============================================================
 # Deep Research Agent クラス
 # ============================================================
 class DeepResearchAgent:
@@ -166,6 +192,238 @@ class DeepResearchAgent:
             return f"{instruction}\n\n{query}"
 
         return query
+
+    def _generate_filename(self, query: str) -> str:
+        """
+        クエリからユニークなファイル名を生成する
+
+        ファイル名形式: 調査内容の冒頭10文字_日時
+
+        Args:
+            query: 調査テーマ
+
+        Returns:
+            str: 生成されたファイル名（拡張子なし）
+        """
+        # クエリから冒頭10文字を取得（特殊文字を除去）
+        clean_query = re.sub(r'[\\/*?:"<>|\n\r\t]', '', query)
+        prefix = clean_query[:10].strip()
+
+        # 日時を付与（YYYYMMDD_HHMMSS形式）
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        return f"{prefix}_{timestamp}"
+
+    def batch_research(self, queries: List[str]) -> List[ResearchResult]:
+        """
+        複数の調査テーマを並列で実行する
+
+        すべての調査をbackground=Trueで開始し、
+        完了したものから順にファイルを保存します。
+
+        Args:
+            queries: 調査テーマのリスト
+
+        Returns:
+            List[ResearchResult]: 全調査結果のリスト
+        """
+        if not queries:
+            print("⚠️ 調査テーマが指定されていません。")
+            return []
+
+        print("=" * 60)
+        print("🔬 Gemini Deep Research Agent - バッチ調査開始")
+        print("=" * 60)
+        print(f"\n📋 調査テーマ数: {len(queries)}件")
+        language_names = {"ja": "日本語", "en": "英語", "zh": "中国語", "ko": "韓国語"}
+        lang_display = language_names.get(self.config.output_language, "指定なし")
+        print(f"🌐 出力言語: {lang_display}")
+        print(f"⏱️  最大調査時間: {self.config.max_timeout // 60}分")
+        print("-" * 60)
+
+        # バッチタスクリストを初期化
+        tasks: List[BatchResearchTask] = []
+        start_time = time.time()
+
+        # ============================================================
+        # ステップ1: すべての調査をbackground=Trueで開始
+        # ============================================================
+        print("\n🚀 すべての調査を並列で開始しています...")
+
+        for i, query in enumerate(queries, 1):
+            task = BatchResearchTask(
+                query=query,
+                started_at=datetime.now().isoformat(),
+                filename=self._generate_filename(query)
+            )
+
+            try:
+                # 言語設定に基づいてクエリに言語指示を追加
+                effective_query = self._build_query_with_language(query)
+
+                initial_interaction = self.client.interactions.create(
+                    input=effective_query,
+                    agent=self.config.model_name,
+                    background=True
+                )
+
+                task.interaction_id = initial_interaction.id
+                task.status = "processing"
+                print(f"   [{i}/{len(queries)}] ✅ 開始: {query[:30]}...")
+                print(f"            ID: {task.interaction_id}")
+
+            except Exception as e:
+                task.status = "failed"
+                task.result = ResearchResult(
+                    query=query,
+                    status="failed",
+                    error_message=str(e),
+                    started_at=task.started_at
+                )
+                print(f"   [{i}/{len(queries)}] ❌ 開始失敗: {query[:30]}... - {e}")
+
+            tasks.append(task)
+
+        # 処理中のタスク数をカウント
+        active_tasks = [t for t in tasks if t.status == "processing"]
+        print(f"\n📊 {len(active_tasks)}件の調査が進行中...")
+
+        # ============================================================
+        # ステップ2: すべての調査が完了するまでポーリング
+        # ============================================================
+        print("\n⏳ 調査完了を待機中... (完了したものから順に保存します)")
+
+        iteration = 0
+        while True:
+            iteration += 1
+            elapsed_time = time.time() - start_time
+
+            # 処理中のタスクを取得
+            active_tasks = [t for t in tasks if t.status == "processing"]
+
+            # すべて完了したら終了
+            if not active_tasks:
+                break
+
+            # 進捗表示
+            completed_count = len([t for t in tasks if t.status == "completed"])
+            failed_count = len([t for t in tasks if t.status in ["failed", "timeout"]])
+            elapsed_min = int(elapsed_time // 60)
+            elapsed_sec = int(elapsed_time % 60)
+            print(f"\n   [{elapsed_min:02d}:{elapsed_sec:02d}] ポーリング #{iteration}")
+            print(f"   📊 進行中: {len(active_tasks)} | 完了: {completed_count} | 失敗: {failed_count}")
+
+            # 各タスクのステータスをチェック
+            for task in active_tasks:
+                # タイムアウトチェック
+                task_elapsed = time.time() - datetime.fromisoformat(task.started_at).timestamp()
+                if task_elapsed > self.config.max_timeout:
+                    task.status = "timeout"
+                    task.result = ResearchResult(
+                        query=task.query,
+                        status="timeout",
+                        error_message=f"調査が最大時間({self.config.max_timeout}秒)を超過しました",
+                        started_at=task.started_at,
+                        completed_at=datetime.now().isoformat(),
+                        duration_seconds=task_elapsed
+                    )
+                    print(f"      ⚠️ タイムアウト: {task.query[:30]}...")
+                    continue
+
+                try:
+                    # ステータス確認
+                    current_interaction = self.client.interactions.get(id=task.interaction_id)
+                    status = current_interaction.status
+
+                    if status.upper() == "COMPLETED":
+                        task.status = "completed"
+                        task_elapsed = time.time() - datetime.fromisoformat(task.started_at).timestamp()
+
+                        # 結果を取得
+                        full_report = ""
+                        if hasattr(current_interaction, 'outputs') and current_interaction.outputs:
+                            full_report = current_interaction.outputs[-1].text
+                        elif hasattr(current_interaction, 'result'):
+                            full_report = str(current_interaction.result)
+                        elif hasattr(current_interaction, 'output') and current_interaction.output:
+                            if hasattr(current_interaction.output, 'text'):
+                                full_report = current_interaction.output.text
+                            else:
+                                full_report = str(current_interaction.output)
+
+                        if not full_report:
+                            full_report = "調査は完了しましたが、レポート本文を取得できませんでした。"
+
+                        task.result = ResearchResult(
+                            query=task.query,
+                            status="completed",
+                            full_report=full_report,
+                            started_at=task.started_at,
+                            completed_at=datetime.now().isoformat(),
+                            duration_seconds=task_elapsed
+                        )
+
+                        # 構造化データを抽出
+                        task.result = self._extract_structured_data(task.result)
+
+                        # 即座にファイルを保存
+                        print(f"      ✅ 完了: {task.query[:30]}...")
+                        self.save_markdown(task.result, task.filename)
+                        self.save_json(task.result, task.filename)
+
+                    elif status.upper() == "FAILED":
+                        task.status = "failed"
+                        task_elapsed = time.time() - datetime.fromisoformat(task.started_at).timestamp()
+                        error_msg = "調査が失敗しました"
+                        if hasattr(current_interaction, 'error'):
+                            error_msg = f"調査が失敗しました: {current_interaction.error}"
+
+                        task.result = ResearchResult(
+                            query=task.query,
+                            status="failed",
+                            error_message=error_msg,
+                            started_at=task.started_at,
+                            completed_at=datetime.now().isoformat(),
+                            duration_seconds=task_elapsed
+                        )
+                        print(f"      ❌ 失敗: {task.query[:30]}... - {error_msg}")
+
+                except Exception as e:
+                    print(f"      ⚠️ ステータス確認エラー: {task.query[:30]}... - {e}")
+
+            # 次のポーリングまで待機
+            time.sleep(self.config.polling_interval)
+
+        # ============================================================
+        # ステップ3: 最終結果のサマリーを表示
+        # ============================================================
+        total_time = time.time() - start_time
+        completed_tasks = [t for t in tasks if t.status == "completed"]
+        failed_tasks = [t for t in tasks if t.status in ["failed", "timeout"]]
+
+        print("\n" + "=" * 60)
+        print("🎉 バッチ調査完了！")
+        print("=" * 60)
+        print(f"\n📊 結果サマリー:")
+        print(f"   - 総調査数: {len(tasks)}件")
+        print(f"   - 成功: {len(completed_tasks)}件")
+        print(f"   - 失敗/タイムアウト: {len(failed_tasks)}件")
+        print(f"   - 総所要時間: {total_time:.1f}秒")
+
+        if completed_tasks:
+            print(f"\n📁 保存されたファイル:")
+            for task in completed_tasks:
+                print(f"   - {self.config.output_dir}/{task.filename}.md")
+                print(f"   - {self.config.output_dir}/{task.filename}.json")
+
+        if failed_tasks:
+            print(f"\n⚠️ 失敗した調査:")
+            for task in failed_tasks:
+                error = task.result.error_message if task.result else "不明なエラー"
+                print(f"   - {task.query[:40]}... ({task.status}: {error})")
+
+        # 結果リストを返す
+        return [t.result for t in tasks if t.result]
 
     def research(self, query: str) -> ResearchResult:
         """
@@ -478,22 +736,45 @@ def main():
 
     コマンドライン引数から調査テーマを受け取り、
     調査を実行して結果を保存します。
+
+    使用方法:
+        # 単一テーマの調査
+        python deep_research_agent.py "調査テーマ"
+
+        # 複数テーマの並列調査（カンマ区切り）
+        python deep_research_agent.py --batch "テーマ1" "テーマ2" "テーマ3"
     """
     # デフォルトの調査テーマ
-    default_query = (
+    default_queries = [
         "日本の農業における生成AI活用事例（スマート農業、病害虫診断、自動収穫など）を、"
         "企業や自治体のプレスリリースなどの一次情報を中心に多角的に調査し、"
         "引用元を明記したレポートを作成して。"
-    )
+    ]
 
-    # コマンドライン引数から調査テーマを取得
+    # コマンドライン引数を解析
+    batch_mode = False
+    queries = []
+
     if len(sys.argv) > 1:
-        query = " ".join(sys.argv[1:])
+        if sys.argv[1] == "--batch":
+            # バッチモード：複数テーマを並列実行
+            batch_mode = True
+            queries = sys.argv[2:]
+            if not queries:
+                print("❌ --batch オプションには1つ以上の調査テーマが必要です。")
+                print("   使用例: python deep_research_agent.py --batch \"テーマ1\" \"テーマ2\"")
+                sys.exit(1)
+        else:
+            # 単一テーマモード
+            queries = [" ".join(sys.argv[1:])]
     else:
-        query = default_query
+        queries = default_queries
         print("💡 調査テーマが指定されていないため、デフォルトのテーマを使用します。")
         print("   カスタムテーマを使用するには:")
         print("   python deep_research_agent.py \"調査テーマ\"")
+        print()
+        print("   複数テーマを並列で調査するには:")
+        print("   python deep_research_agent.py --batch \"テーマ1\" \"テーマ2\" \"テーマ3\"")
         print()
 
     try:
@@ -503,34 +784,50 @@ def main():
             polling_interval=15,      # 15秒ごとにポーリング
             max_timeout=900,          # 最大15分
             output_dir="output",      # 出力ディレクトリ
-            output_filename="report", # 出力ファイル名
+            output_filename="report", # 出力ファイル名（単一調査時のみ使用）
             output_language="ja"      # 出力言語（日本語）
         )
 
         # エージェントを初期化
         agent = DeepResearchAgent(config)
 
-        # 調査を実行
-        result = agent.research(query)
+        if batch_mode or len(queries) > 1:
+            # バッチモード：複数テーマを並列実行
+            results = agent.batch_research(queries)
 
-        # 結果を保存
-        agent.save_markdown(result)
-        agent.save_json(result)
+            # 成功した調査の概要を表示
+            completed_results = [r for r in results if r.status == "completed"]
+            if completed_results:
+                print(f"\n📝 完了した調査の概要:")
+                for result in completed_results:
+                    if result.summary:
+                        print(f"\n【{result.query[:30]}...】")
+                        print(f"   {result.summary[:200]}...")
 
-        # 完了メッセージ
-        print("\n" + "=" * 60)
-        print("🎉 調査が正常に完了しました！")
-        print("=" * 60)
-        print(f"\n📁 出力ファイル:")
-        print(f"   - {config.output_dir}/{config.output_filename}.md")
-        print(f"   - {config.output_dir}/{config.output_filename}.json")
+        else:
+            # 単一テーマモード
+            query = queries[0]
+            result = agent.research(query)
 
-        # 概要を表示
-        if result.summary:
-            print(f"\n📝 概要:\n{result.summary[:300]}...")
+            # ファイル名を生成して保存
+            filename = agent._generate_filename(query)
+            agent.save_markdown(result, filename)
+            agent.save_json(result, filename)
 
-        # ソースURL数を表示
-        print(f"\n🔗 抽出されたソースURL: {len(result.source_urls)}件")
+            # 完了メッセージ
+            print("\n" + "=" * 60)
+            print("🎉 調査が正常に完了しました！")
+            print("=" * 60)
+            print(f"\n📁 出力ファイル:")
+            print(f"   - {config.output_dir}/{filename}.md")
+            print(f"   - {config.output_dir}/{filename}.json")
+
+            # 概要を表示
+            if result.summary:
+                print(f"\n📝 概要:\n{result.summary[:300]}...")
+
+            # ソースURL数を表示
+            print(f"\n🔗 抽出されたソースURL: {len(result.source_urls)}件")
 
     except ValueError as e:
         print(f"\n❌ 設定エラー: {e}")
