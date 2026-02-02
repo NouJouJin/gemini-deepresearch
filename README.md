@@ -198,6 +198,12 @@ config = ResearchConfig(
 - Interactions APIはパブリックベータ版のため、仕様が変更される可能性があります
 - APIの使用には料金が発生する場合があります
 
+## 公開・運用時の注意
+
+- **APIキーや個人情報は入力・共有しない**：`.env` や環境変数に設定したAPIキーはリポジトリに含めないでください。
+- **生成物は公開前に必ずレビューする**：`output/` のレポートには第三者の著作物や個人情報が含まれる可能性があります。
+- **出力ディレクトリはGit管理対象外にする**：`output/` を公開対象に含めない運用を推奨します。
+
 ## 参考リンク
 
 - [Gemini Deep Research Agent ドキュメント](https://ai.google.dev/gemini-api/docs/deep-research)
