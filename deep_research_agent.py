@@ -79,8 +79,8 @@ class ResearchConfig:
     # ポーリング間隔（秒）- 10〜20秒の範囲で設定
     polling_interval: int = 15
 
-    # 最大調査時間（秒）- デフォルト15分
-    max_timeout: int = 1200
+    # 最大調査時間（秒）- デフォルト25分
+    max_timeout: int = 1500
 
     # 出力ディレクトリ
     output_dir: str = "output"
