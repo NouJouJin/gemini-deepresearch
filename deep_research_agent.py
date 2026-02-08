@@ -41,6 +41,45 @@ python deep_research_agent.py "日本国内の農家による生成AI実務活�
 使用AI（ツール名）
 入力したもの／AIにさせたこと（要点）
 出典URL"
+
+python deep_research_agent.py "OpenClawについて、初心者でも迷わず導入できる手順と、すぐ業務に転用できる活用例を網羅的に整理してください。対象読者は「ターミナルに不慣れ／インフラ知識が薄い」人です。
+### 1) 導入手順（初心者向けに手順化）
+
+* 対象OSをWindowsで「最短ルート」を提示：
+
+* Windows（WSL含む）
+* 推奨インストール方法（例：公式インストーラ/CLI）で、コマンドはコピペで動く形にする（前提条件→インストール→オンボーディング→起動→動作確認まで）。 ([OpenClaw][1])
+* 連携チャネルの初期設定（例：Slack/Discord/Telegram等）を、最初の1チャネルだけ確実に繋ぐ手順として説明（必要なキー/権限/設定画面の場所も）。 ([GitHub][2])
+* Docker運用（できれば）も「別ルート」として整理：導入メリデメ、compose手順、データ永続化の注意点。 ([til.simonwillison.net][3])
+
+### 2) セキュリティ前提（初心者が事故らないガードレール）
+
+* 「やってはいけない設定」と「最小権限の考え方」を、具体例付きで。
+* サードパーティ技能（skill/プラグイン/レジストリ）導入時の注意点（コード確認、怪しいコマンド実行の回避など）。最近、レジストリ経由の悪性skill混入が報告されているため、安全策を明示。 ([Tom's Hardware][4])
+
+### 3) 具体的な活用例の洗い出し（すぐ使える粒度）
+
+以下のフォーマットで、最低15〜30個（個人用途/チーム用途/運用自動化でカテゴリ分け）：
+
+* 目的（誰の何を改善する？）
+* 入力（ユーザーが何を投げる？例：チャット1行、ファイル、URL）
+* OpenClawにさせること（実行アクション）
+* 出力（返答、ファイル生成、通知、タスク実行結果など）
+* 必要な権限・連携（メール/カレンダー/Slack/ブラウザ操作/ローカルファイル等）
+* リスクと対策（誤送信、権限過多、情報漏洩など）
+
+### 4) つまずきポイント＆トラブルシューティング
+
+* 「ここで詰まる」TOP10（例：Node/Docker周り、権限、チャネル連携、LLMキー、応答しない等）
+* エラー例→原因→解決手順（初心者向けに短く）"
+
+python deep_research_agent.py "あなたはリサーチャー。OpenClawを一次情報（公式Docs/GitHub/リリース/実装例）中心に調査し、根拠URL付きでまとめてください。
+A) 活用事例：最低20件。各事例は「目的／入力／OpenClawがすること／出力／必要連携・権限／注意点／根拠URL」。※具体的な入出力が確認できるもののみ。
+B) 差分：ChatGPT/Gemini/Claude等の生成AI“単体”と比較し、OpenClawで可能で他は難しい点を境界条件付きで整理。比較表（項目・OpenClaw・他AI・根拠URL）。
+C) 導入：初心者が再現できるようにWindows+WSL「前提→インストール→設定→1チャネル連携→動作確認→トラブルシュート」。
+推測・一般論は不要。不確かな点は「未確認/要検証」と明記。各セクションに参照したURLを必ず添付。"
+
+
 """
 
 import os
@@ -80,7 +119,7 @@ class ResearchConfig:
     polling_interval: int = 15
 
     # 最大調査時間（秒）- デフォルト25分
-    max_timeout: int = 1500
+    max_timeout: int = 2000
 
     # 出力ディレクトリ
     output_dir: str = "output"
@@ -346,8 +385,8 @@ class DeepResearchAgent:
 
                 initial_interaction = self.client.interactions.create(
                     input=effective_query,
-                    agent=self.config.model_name,
-                    background=True
+                    agent=self.config.model_name,                    
+    background=False  # ここをFalseに変えてみる
                 )
 
                 task.interaction_id = initial_interaction.id
@@ -887,8 +926,8 @@ def main():
         # 設定を作成（必要に応じてカスタマイズ可能）
         # output_language: "ja"=日本語, "en"=英語, "zh"=中国語, "ko"=韓国語, None=指定なし
         config = ResearchConfig(
-            polling_interval=15,      # 15秒ごとにポーリング
-            max_timeout=900,          # 最大15分
+            polling_interval=60,      # 15秒ごとにポーリング
+            max_timeout=2500,          # 最大15分
             output_dir="output",      # 出力ディレクトリ
             output_filename="report", # 出力ファイル名（単一調査時のみ使用）
             output_language="ja"      # 出力言語（日本語）
