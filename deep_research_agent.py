@@ -13,8 +13,13 @@ Gemini Deep Research Agent - 自動調査スクリプト
     GOOGLE_API_KEY: Google AI StudioのAPIキー
 
 使用例
-python deep_research_agent.py "たった一日で儲かる社長に生まれ変わるの書籍について書評やレビューや口コミやブログから内容を調査洗い出して"
+python deep_research_agent.py "AI過大評価社会――AIには何ができて、何ができないか ,アルヴィンド・ナラヤナン(著)の書籍について書評やレビューや口コミやブログから内容を調査洗い出して"
+python deep_research_agent.py "超知能AIをつくれば人類は絶滅する ,エリーザー・ユドコウスキー(著)の書籍について書評やレビューや口コミやブログから内容を調査洗い出して"
+python deep_research_agent.py "デジタル円とステーブルコインの衝撃　これから銀行・通貨はどうなるのか？の書籍について書評やレビューや口コミやブログから内容を調査洗い出して"
+python deep_research_agent.py "生成AIが変える世界を紐解くINFRA MECHANISM　-時代を生き残るための7つの戦略、江崎貴裕 (著)の書籍について書評やレビューや口コミやブログから内容を調査洗い出して"
+python deep_research_agent.py "西野 亮廣 (著)、北極星　僕たちはどう働くかの書籍について書評やレビューや口コミやブログから内容を調査洗い出して"
 python deep_research_agent.py "コメ関税ゼロで日本農業の夜は明ける,野口憲一／著,の書籍について書評やレビューや口コミやブログから内容を調査洗い出して"
+python deep_research_agent.py "エージェントAIのOpenClawの便利な利用事例を調査して。特に、従来の生成AIには実現できなかった特徴や利便性を発揮する事例をメインにまとめて"
 python deep_research_agent.py "日本国内の個人農家（家族経営含む。小規模法人は従業員10名未満まで可）が、生成AI（ChatGPT/Claude/Gemini/Midjourney等）を実務で活用している事例を、本人の一次発信（note/X/Instagram/YouTube/ブログ/stand.fm等）だけから収集してください。
 採用条件は、**「何を入力し（データ/素材）→AIに何をさせ→何が出力され→どう業務に使ったか」**が具体的に分かる投稿のみ（内容が薄いものは除外）。2024年以降を優先。
 最低20件（可能なら30件）、各事例は以下の形式で整理：
@@ -93,14 +98,14 @@ from dataclasses import dataclass, field, asdict
 
 # ============================================================
 # google-genaiライブラリのインポート
-# バージョン1.55.0以降が必要です
+# バージョン2.0.0以降が必要です
 # ============================================================
 try:
     from google import genai
 except ImportError:
     print("エラー: google-genaiライブラリがインストールされていません。")
     print("以下のコマンドでインストールしてください:")
-    print("  pip install google-genai>=1.55.0")
+    print("  pip install google-genai>=2.0.0")
     sys.exit(1)
 
 
@@ -112,14 +117,16 @@ except ImportError:
 class ResearchConfig:
     """調査設定を管理するデータクラス"""
 
-    # 使用するDeep Researchモデル（推論コア）
+    # 使用するDeep Researchモデル（推論コア）★リサーチモデル
     model_name: str = "deep-research-pro-preview-12-2025"
-
+    # model_name: str = "deep-research-max-preview-04-2026" 
+    # model_name: str = "deep-research-preview-04-2026"
+    
     # ポーリング間隔（秒）- 10〜20秒の範囲で設定
-    polling_interval: int = 15
+    polling_interval: int = 20
 
-    # 最大調査時間（秒）- デフォルト25分
-    max_timeout: int = 2000
+    # 最大調査時間（秒）- デフォルト50分
+    max_timeout: int = 3000
 
     # 出力ディレクトリ
     output_dir: str = "output"
@@ -386,7 +393,7 @@ class DeepResearchAgent:
                 initial_interaction = self.client.interactions.create(
                     input=effective_query,
                     agent=self.config.model_name,                    
-    background=False  # ここをFalseに変えてみる
+                    background=True  # 並列非同期処理のためTrueに設定
                 )
 
                 task.interaction_id = initial_interaction.id
@@ -461,17 +468,27 @@ class DeepResearchAgent:
                         task.status = "completed"
                         task_elapsed = time.time() - datetime.fromisoformat(task.started_at).timestamp()
 
-                        # 結果を取得
+                        # 結果を取得 (google-genai >= 2.0.0 推奨仕様)
                         full_report = ""
-                        if hasattr(current_interaction, 'outputs') and current_interaction.outputs:
-                            full_report = current_interaction.outputs[-1].text
-                        elif hasattr(current_interaction, 'result'):
-                            full_report = str(current_interaction.result)
-                        elif hasattr(current_interaction, 'output') and current_interaction.output:
-                            if hasattr(current_interaction.output, 'text'):
-                                full_report = current_interaction.output.text
-                            else:
-                                full_report = str(current_interaction.output)
+                        if hasattr(current_interaction, 'output_text') and current_interaction.output_text:
+                            full_report = current_interaction.output_text
+                        elif hasattr(current_interaction, 'steps') and current_interaction.steps:
+                            # stepsからテキストを探すフォールバック
+                            for step in reversed(current_interaction.steps):
+                                if step.type == "model_output" and step.content:
+                                    for block in reversed(step.content):
+                                        if block.type == "text" and block.text:
+                                            full_report = block.text
+                                            break
+                                    if full_report:
+                                        break
+                        
+                        # 旧SDKとの互換用フォールバック
+                        if not full_report:
+                            if hasattr(current_interaction, 'outputs') and current_interaction.outputs:
+                                full_report = current_interaction.outputs[-1].text
+                            elif hasattr(current_interaction, 'result'):
+                                full_report = str(current_interaction.result)
 
                         if not full_report:
                             full_report = "調査は完了しましたが、レポート本文を取得できませんでした。"
@@ -490,7 +507,7 @@ class DeepResearchAgent:
                         )
 
                         # 構造化データを抽出
-                        task.result = self._extract_structured_data(task.result)
+                        task.result = self._extract_structured_data(task.result, current_interaction)
 
                         # 即座にファイルを保存
                         token_info = f" (トークン: {token_usage['total_tokens']:,})" if token_usage['total_tokens'] > 0 else ""
@@ -663,22 +680,27 @@ class DeepResearchAgent:
                     print("\n✅ 調査が完了しました！")
                     result.status = "completed"
 
-                    # --- 修正箇所：結果の抽出ロジックを最新仕様に合わせる ---
-                    # 1. まず outputs (複数形) リストを確認
-                    if hasattr(current_interaction, 'outputs') and current_interaction.outputs:
-                        # 最後の出力に最終レポートが入っているのが一般的です
-                        result.full_report = current_interaction.outputs[-1].text
+                    # --- 修正箇所：結果の抽出ロジックを最新仕様（google-genai >= 2.0.0）に合わせる ---
+                    result.full_report = ""
+                    if hasattr(current_interaction, 'output_text') and current_interaction.output_text:
+                        result.full_report = current_interaction.output_text
+                    elif hasattr(current_interaction, 'steps') and current_interaction.steps:
+                        # stepsからテキストを探すフォールバック
+                        for step in reversed(current_interaction.steps):
+                            if step.type == "model_output" and step.content:
+                                for block in reversed(step.content):
+                                    if block.type == "text" and block.text:
+                                        result.full_report = block.text
+                                        break
+                                if result.full_report:
+                                    break
                     
-                    # 2. outputs がなかった場合の予備（古い仕様や例外への対応）
-                    elif hasattr(current_interaction, 'result'):
-                        result.full_report = str(current_interaction.result)
-                    
-                    # 3. それでも取れなかった場合の最後の手段（元々のロジック）
-                    elif hasattr(current_interaction, 'output') and current_interaction.output:
-                        if hasattr(current_interaction.output, 'text'):
-                            result.full_report = current_interaction.output.text
-                        else:
-                            result.full_report = str(current_interaction.output)
+                    # 旧形式との互換用フォールバック
+                    if not result.full_report:
+                        if hasattr(current_interaction, 'outputs') and current_interaction.outputs:
+                            result.full_report = current_interaction.outputs[-1].text
+                        elif hasattr(current_interaction, 'result'):
+                            result.full_report = str(current_interaction.result)
 
                     # 万が一中身が空だった場合の処理
                     if not result.full_report:
@@ -724,11 +746,11 @@ class DeepResearchAgent:
         # レポートから概要、ソースURL、結論を抽出します
         # ============================================================
         if result.full_report:
-            result = self._extract_structured_data(result)
+            result = self._extract_structured_data(result, current_interaction)
 
         return result
 
-    def _extract_structured_data(self, result: ResearchResult) -> ResearchResult:
+    def _extract_structured_data(self, result: ResearchResult, interaction=None) -> ResearchResult:
         """
         レポートから構造化データを抽出する
 
@@ -739,31 +761,54 @@ class DeepResearchAgent:
 
         Args:
             result: 調査結果オブジェクト
+            interaction: APIから返された最新のinteractionオブジェクト (省略可能)
 
         Returns:
             ResearchResult: 構造化データが追加された結果
         """
         report = result.full_report
 
-        # URLの抽出（Markdown形式のリンクとプレーンURL）
+        # 重複防止用のURLセット
+        seen_urls = set()
+
+        # ------------------------------------------------------------
+        # URLの抽出
+        # ------------------------------------------------------------
+        # 方法①: 新しいInteractions APIの steps -> content -> annotations (url_citation) からURLを抽出 (優先)
+        if interaction and hasattr(interaction, 'steps') and interaction.steps:
+            for step in interaction.steps:
+                if step.type == "model_output" and step.content:
+                    for content_block in step.content:
+                        if content_block.type == "text" and content_block.annotations:
+                            for annotation in content_block.annotations:
+                                if annotation.type == "url_citation":
+                                    url = getattr(annotation, "url", "")
+                                    title = getattr(annotation, "title", "") or "Source"
+                                    if url and url not in seen_urls:
+                                        result.source_urls.append({"title": title, "url": url})
+                                        seen_urls.add(url)
+
+        # 方法②: Markdownのリンクやプレーンテキスト内のURLを正規表現で相補的に抽出
         # パターン1: [テキスト](URL)
         markdown_urls = re.findall(r'\[([^\]]+)\]\((https?://[^\)]+)\)', report)
         # パターン2: プレーンURL
         plain_urls = re.findall(r'(?<!\()(https?://[^\s\)\]]+)', report)
 
-        # 重複を除去してソースURLリストを作成
-        seen_urls = set()
         for text, url in markdown_urls:
             if url not in seen_urls:
                 result.source_urls.append({"title": text, "url": url})
                 seen_urls.add(url)
 
         for url in plain_urls:
-            if url not in seen_urls:
-                result.source_urls.append({"title": "", "url": url})
-                seen_urls.add(url)
+            # 閉じ括弧や文末記号などを簡易的にトリミング
+            clean_url = url.rstrip('.,);]*')
+            if clean_url not in seen_urls:
+                result.source_urls.append({"title": "", "url": clean_url})
+                seen_urls.add(clean_url)
 
-        # 概要の抽出（最初の段落または「概要」セクション）
+        # ------------------------------------------------------------
+        # 概要の抽出
+        # ------------------------------------------------------------
         summary_match = re.search(
             r'(?:##?\s*(?:概要|要約|Summary|Overview)[:\s]*\n)(.*?)(?=\n##|\n\n\n|$)',
             report,
@@ -780,7 +825,9 @@ class DeepResearchAgent:
                     result.summary = p[:500] + ('...' if len(p) > 500 else '')
                     break
 
+        # ------------------------------------------------------------
         # 結論の抽出
+        # ------------------------------------------------------------
         conclusion_match = re.search(
             r'(?:##?\s*(?:結論|まとめ|Conclusion|Summary)[:\s]*\n)(.*?)(?=\n##|\Z)',
             report,
@@ -926,8 +973,8 @@ def main():
         # 設定を作成（必要に応じてカスタマイズ可能）
         # output_language: "ja"=日本語, "en"=英語, "zh"=中国語, "ko"=韓国語, None=指定なし
         config = ResearchConfig(
-            polling_interval=60,      # 15秒ごとにポーリング
-            max_timeout=2500,          # 最大15分
+            polling_interval=60,      # ポーリング間隔
+            max_timeout=5000,          # 最大待機時間
             output_dir="output",      # 出力ディレクトリ
             output_filename="report", # 出力ファイル名（単一調査時のみ使用）
             output_language="ja"      # 出力言語（日本語）
